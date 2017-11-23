@@ -1,6 +1,7 @@
 module Network.SC2.Types
   ( module Network.SC2.Types
   , A.Difficulty(..)
+  , A.Status(..)
   ) where
 
 import Data.Void

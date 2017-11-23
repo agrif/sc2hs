@@ -11,13 +11,22 @@ bot = do
   send (putStrLn $ "info: " ++ show info)
 
   Right maps@(map : _) <- syncRequest AvailableMaps
-  send (putStrLn $ "maps: " ++ show maps)
+  --send (putStrLn $ "maps: " ++ show maps)
 
-  r <- syncRequest $ CreateGame map [Participant Protoss, Computer (Random ()) Medium]
-  send (putStrLn $ "create game: " ++ show r)
+  Right () <- syncRequest $ CreateGameFull map [Participant Protoss, Computer (Random ()) Medium] Fog RandomSeed Realtime
+  send (putStrLn "create game success")
 
-  r <- syncRequest $ JoinGame Protoss [Raw]
-  send (putStrLn $ "join game: " ++ show r)
+  Right pid <- syncRequest $ JoinGame Protoss [Raw]
+  send (putStrLn $ "join game: " ++ show pid)
 
-  r <- syncRequest $ GameInfo
-  send (putStrLn $ "info: " ++ show r)
+  Right info <- syncRequest $ GameInfo
+  --send (putStrLn $ "info: " ++ show info)
+
+  loop
+
+loop = do
+  syncRequest Step
+  status <- getStatus
+  case status of
+    Ended -> send (putStrLn "ending game")
+    _     -> loop

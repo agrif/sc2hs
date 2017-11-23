@@ -10,9 +10,9 @@ module Network.SC2.Protocol
        , SC2Control(..)
        , SC2
        , SC2M
-       , Status
        , unsafeRequest
        , unsafeResponse
+       , getStatus
        , request
        , syncRequest'
        , syncRequest
@@ -22,7 +22,7 @@ module Network.SC2.Protocol
 
 import Control.Monad.Freer
 import Control.Monad
-import Proto.S2clientprotocol.Sc2api as A
+import qualified Proto.S2clientprotocol.Sc2api as A
 import Network.SC2.Requestable
 import Network.SC2.Process
 import Network.SC2.Split
@@ -58,15 +58,15 @@ syncRequest :: (SC2 r, Requestable a) => a -> Eff r (Either String (ResponseOf a
 syncRequest r = syncRequest' r (pure ())
 
 runSC2Control :: (Member IO r) => Eff (SC2Control ': r) a -> Starcraft -> Eff r a
-runSC2Control m sc = runNatS Launched go m
+runSC2Control m sc = runNatS A.Launched go m
   where
-    go :: Status -> SC2Control a -> IO (Status, a)
+    go :: A.Status -> SC2Control a -> IO (A.Status, a)
     go s (SC2Request r) = (s,) <$> sendRequest sc r
     go s (SC2Response) = do
       resp <- readResponse sc
       case resp of
         Left _ -> return (s, resp)
-        Right r -> case _Response'status r of
+        Right r -> case A._Response'status r of
           Nothing -> return (s, resp)
           Just s' -> return (s', resp)
     go s (SC2Status) = return (s, s)

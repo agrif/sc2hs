@@ -24,19 +24,23 @@ import Network.SC2.Requests
 data ExecOptions = ExecOptions
     { executable :: String
     , workingDirectory :: Maybe String
+    , windowWidth :: Word
+    , windowHeight :: Word
     , connection :: ConnectOptions
     } deriving (Eq, Show)
 
 data ConnectOptions =
   ConnectOptions
   { listenAddress :: String
-  , listenPort :: Int
+  , listenPort :: Word
   } deriving (Eq, Show)
 
 instance OptParseable ExecOptions where
   optParse = ExecOptions
              <$> strOption (long "executable" <> short 'e' <> metavar "PATH" <> help "path to the starcraft 2 executable")
              <*> optional (strOption (long "working-dir" <> short 'w' <> metavar "PATH" <> help "change to this directory before launching starcraft"))
+             <*> option auto (long "window-width" <> metavar "WIDTH" <> help "width of starcraft 2 window" <> value 1024)
+             <*> option auto (long "window-height" <> metavar "HEIGHT" <> help "height of starcraft 2 window" <> value 768)
              <*> optParse
 
 instance OptParseable ConnectOptions where
@@ -51,14 +55,17 @@ data Starcraft =
   }
 
 starcraftConnectIntern :: (WS.Connection -> IO ()) -> ConnectOptions -> IO ()
-starcraftConnectIntern act opt = withSocketsDo $ tryConnect 0
+starcraftConnectIntern act opt = withSocketsDo $ do
+  tryConnect 60
+  runOurClient $ \conn -> do
+    --WS.forkPingThread conn 10
+    act conn
   where
-    tryConnect i | i < 60 = connectOnce `catch` \(x :: SomeException) -> (threadDelay 1000000 >> tryConnect (i + 1))
-                 | otherwise = connectOnce
- 
-    connectOnce = WS.runClient (listenAddress opt) (listenPort opt) "/sc2api" $ \conn -> do
-      WS.forkPingThread conn 30
-      act conn
+    runOurClient = WS.runClient (listenAddress opt) (fromIntegral (listenPort opt)) "/sc2api"
+    
+    tryConnect i | i > 0 = runOurClient (const (pure ())) `catch` \(x :: SomeException) -> tryAgain i
+                 | otherwise = runOurClient (const (pure ()))
+    tryAgain i = threadDelay 1000000 >> tryConnect (i - 1)
 
 runRemote :: (Starcraft -> IO ()) -> ConnectOptions -> IO ()
 runRemote act = starcraftConnectIntern (act . Starcraft Nothing)
@@ -69,12 +76,12 @@ runLocal act opt = maybe id withCurrentDirectory (workingDirectory opt) $ withCr
     handler stdin stdout stderr ph = do
       starcraftConnectIntern (\conn ->
                                  let sc = Starcraft (Just ph) conn
-                                 in act sc >> sendRequest sc (toRequest Quit))
+                                 in act sc >> sendRequest sc (toRequest QuitGame))
         (connection opt)
       waitForProcess ph
       return ()
 
-    procinfo = proc (executable opt) ["-listen", listenAddress $ connection opt, "-port", show (listenPort $ connection opt), "-displayMode", "0", "-windowwidth", "1024", "-windowheight", "768"]
+    procinfo = proc (executable opt) ["-listen", listenAddress $ connection opt, "-port", show (listenPort $ connection opt), "-displayMode", "0", "-windowwidth", show (windowWidth opt), "-windowheight", show (windowHeight opt)]
 
 sendRequest :: Starcraft -> A.Request -> IO ()
 sendRequest sc = WS.sendBinaryData (processConn sc) . encodeMessage

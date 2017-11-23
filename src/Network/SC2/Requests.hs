@@ -14,8 +14,9 @@ module Network.SC2.Requests
        , LeaveGame(..)
        , QuickSave(..)
        , QuickLoad(..)
-       , Quit(..)
+       , QuitGame(..)
        , GameInfo(..)
+       , Step(..)
        , AvailableMaps(..)
        ) where
 
@@ -141,11 +142,11 @@ instance Requestable QuickLoad where
   toRequest _ = def & A.quickLoad .~ A.RequestQuickLoad
   fromResponse _ = void . extractResponse A._Response'quickLoad
 
-data Quit = Quit
+data QuitGame = QuitGame
           deriving (Show, Eq)
 
-instance Requestable Quit where
-  type ResponseOf Quit = ()
+instance Requestable QuitGame where
+  type ResponseOf QuitGame = ()
   toRequest _ = def & A.quit .~ A.RequestQuit
   fromResponse _ = void . extractResponse A._Response'quit
 
@@ -214,7 +215,19 @@ instance Requestable GameInfo where
         parea <- convertFrom =<< (R._StartRaw'playableArea r)
         starts <- traverse convertFrom (R._StartRaw'startLocations r)
         return (StartRaw msize pagrid theight plgrid parea starts)
-         
+
+-- FIXME RequestObservation
+
+-- FIXME RequestAction
+
+data Step = Step
+          | StepMany Word
+
+instance Requestable Step where
+  type ResponseOf Step = ()
+  toRequest Step = toRequest (StepMany 1)
+  toRequest (StepMany i) = def & A.step . A.count .~ fromIntegral i
+  fromResponse _ = void . extractResponse A._Response'step
 
 data AvailableMaps = AvailableMaps
                    deriving (Show, Eq)
