@@ -1,3 +1,4 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 module Network.SC2.Requests
        ( module Network.SC2.Types
@@ -7,8 +8,6 @@ module Network.SC2.Requests
        , Realtime(..)
        , Seed(..)
        , CreateGame(..)
-       , Interface(..)
-       , PlayerID(..)
        , JoinGame(..)
        , RestartGame(..)
        -- , StartReplay(..)
@@ -16,18 +15,22 @@ module Network.SC2.Requests
        , QuickSave(..)
        , QuickLoad(..)
        , Quit(..)
+       , GameInfo(..)
        , AvailableMaps(..)
        ) where
 
 import qualified Proto.S2clientprotocol.Common as C
 import qualified Proto.S2clientprotocol.Sc2api as A
+import qualified Proto.S2clientprotocol.Raw as R
 
 import Lens.Family2
 import Control.Monad
 import Data.Default.Class
 import qualified Data.Text as T
+import Data.Void
 import Network.SC2.Requestable
 import Network.SC2.Types
+import Network.SC2.Convert
 
 data Ping = Ping
           deriving (Show, Eq)
@@ -46,17 +49,6 @@ instance Requestable Ping where
   fromResponse _ = extractResponse (A._Response'ping >=> convert)
     where convert (A.ResponsePing gv dv db bb) = PingResponse <$> (T.unpack <$> gv) <*> (T.unpack <$> dv) <*> (fromIntegral <$> db) <*> (fromIntegral <$> bb)
 
-convertRace :: Race -> C.Race
-convertRace Terran = C.Terran
-convertRace Zerg = C.Zerg
-convertRace Protoss = C.Protoss
-convertRace Random = C.Random
-
-convertPlayer :: Player -> A.PlayerSetup
-convertPlayer Observer = A.PlayerSetup (Just A.Observer) Nothing Nothing
-convertPlayer (Participant r) = A.PlayerSetup (Just A.Participant) (Just (convertRace r)) Nothing
-convertPlayer (Computer r d) = A.PlayerSetup (Just A.Computer) (Just (convertRace r)) (Just d)
-
 data Fog = Fog | NoFog
          deriving (Show, Eq, Enum)
 
@@ -66,8 +58,8 @@ data Realtime = Stepped | Realtime
 data Seed = Seed Int | RandomSeed
           deriving (Show, Eq)
 
-data CreateGame = CreateGame Map [Player]
-                | CreateGameFull Map [Player] Fog Seed Realtime
+data CreateGame = CreateGame Map [Player Race]
+                | CreateGameFull Map [Player Race] Fog Seed Realtime
                 deriving (Show, Eq)
 
 instance Requestable CreateGame where
@@ -96,14 +88,8 @@ instance Requestable CreateGame where
   fromResponse _ = void . extractResponseErr A._Response'createGame Just A._ResponseCreateGame'errorDetails
 
 
-data Interface = Raw | Score | FeatureLayer | Render
-               deriving (Show, Eq, Enum)
-
-newtype PlayerID = PlayerID Int
-                 deriving (Show, Eq)
-
--- FIXME as observer? ports
-data JoinGame = JoinGame Race [Interface]
+-- FIXME as observer? ports? render / featurelayer interface?
+data JoinGame = JoinGame Race [Interface Void]
               deriving (Show, Eq)
 
 instance Requestable JoinGame where
@@ -115,11 +101,9 @@ instance Requestable JoinGame where
       racemod :: A.RequestJoinGame -> A.RequestJoinGame
       racemod = A.race .~ convertRace r
 
-      ifacemod :: Interface -> A.RequestJoinGame -> A.RequestJoinGame
+      ifacemod :: Interface Void -> A.RequestJoinGame -> A.RequestJoinGame
       ifacemod Raw = A.options . A.raw .~ True
       ifacemod Score = A.options . A.score .~ True
-      ifacemod FeatureLayer = A.options . A.score .~ True
-      ifacemod Render = A.options . A.score .~ True
   fromResponse _ = fmap (PlayerID . fromIntegral) . extractResponseErr A._Response'joinGame A._ResponseJoinGame'playerId A._ResponseJoinGame'errorDetails
 
 data RestartGame = RestartGame
@@ -164,6 +148,73 @@ instance Requestable Quit where
   type ResponseOf Quit = ()
   toRequest _ = def & A.quit .~ A.RequestQuit
   fromResponse _ = void . extractResponse A._Response'quit
+
+data GameInfo = GameInfo
+              deriving (Show, Eq)
+
+data GameInfoResponse =
+  GameInfoResponse
+  { mapName :: String
+  , modNames :: [String]
+  , localMapPath :: String
+  , playerInfo :: [(PlayerID, Player RaceResolved)]
+  , startRaw :: Maybe StartRaw
+  , interfaces :: [Interface ()]
+  } deriving (Eq, Show)
+
+data StartRaw =
+  StartRaw
+  { mapSize :: (Int, Int)
+  , pathingGrid :: ImageData
+  , terrainHeight :: ImageData
+  , placementGrid :: ImageData
+  , playableArea :: ((Int, Int), (Int, Int))
+  , startLocations :: [(Float, Float)]
+  } deriving (Eq, Show)
+
+instance Requestable GameInfo where
+  type ResponseOf GameInfo = GameInfoResponse
+  toRequest _ = def & A.gameInfo .~ A.RequestGameInfo
+  fromResponse _ = extractResponse (A._Response'gameInfo >=> convert)
+    where
+      convert gi = do
+        mname <- T.unpack <$> A._ResponseGameInfo'mapName gi
+        let mods = T.unpack <$> A._ResponseGameInfo'modNames gi
+        localpath <- T.unpack <$> A._ResponseGameInfo'localMapPath gi
+        players <- traverse convertPlayer (A._ResponseGameInfo'playerInfo gi)
+        let raw = convertRaw =<< A._ResponseGameInfo'startRaw gi
+        let ifaces = (snd . iface A.maybe'raw id Raw . iface A.maybe'score id Score . iface A.maybe'featureLayer (const True) (FeatureLayer ()) . iface A.maybe'render (const True) (Render ())) (gi, [])
+        return (GameInfoResponse mname mods localpath players raw ifaces)
+      iface :: Lens' A.InterfaceOptions (Maybe b) -> (b -> Bool) -> a -> (A.ResponseGameInfo, [a]) -> (A.ResponseGameInfo, [a])
+      iface l t x (gi, xs) = case gi ^. A.options . l of
+        Just b | t b -> (gi, x : xs)
+        _            -> (gi, xs)
+      convertPlayer p = do
+        pid <- PlayerID . fromIntegral <$> A._PlayerInfo'playerId p
+        typ <- A._PlayerInfo'type' p
+        ourtyp <- case typ of
+          A.Observer -> return Observer
+          A.Participant -> do
+            race <- convertRace p
+            return (Participant race)
+          A.Computer -> do
+            race <- convertRace p
+            diff <- A._PlayerInfo'difficulty p
+            return (Computer race diff)
+        return (pid, ourtyp)
+      convertRace p = do
+        req <- A._PlayerInfo'raceRequested p
+        let act = A._PlayerInfo'raceActual p
+        return (convertRaceBack req (flip convertRaceBack (undefined) <$> act))
+      convertRaw r = do
+        msize <- convertFrom =<< (R._StartRaw'mapSize r)
+        pagrid <- convertFrom =<< (R._StartRaw'pathingGrid r)
+        theight <- convertFrom =<< (R._StartRaw'terrainHeight r)
+        plgrid <- convertFrom =<< (R._StartRaw'placementGrid r)
+        parea <- convertFrom =<< (R._StartRaw'playableArea r)
+        starts <- traverse convertFrom (R._StartRaw'startLocations r)
+        return (StartRaw msize pagrid theight plgrid parea starts)
+         
 
 data AvailableMaps = AvailableMaps
                    deriving (Show, Eq)

@@ -13,9 +13,11 @@ bot = do
   Right maps@(map : _) <- syncRequest AvailableMaps
   send (putStrLn $ "maps: " ++ show maps)
 
-  r <- syncRequest $ CreateGame map [Participant Protoss, Computer Terran Medium]
+  r <- syncRequest $ CreateGame map [Participant Protoss, Computer (Random ()) Medium]
   send (putStrLn $ "create game: " ++ show r)
 
   r <- syncRequest $ JoinGame Protoss [Raw]
   send (putStrLn $ "join game: " ++ show r)
 
+  r <- syncRequest $ GameInfo
+  send (putStrLn $ "info: " ++ show r)
